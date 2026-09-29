@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cognitive Code Graph — Local GraphRAG for Code</title>
+  <meta name="description" content="A private, local GraphRAG assistant: tree-sitter parses Python, JavaScript and PHP into a Neo4j call graph, and a local LLM answers questions grounded in it." />
+  <meta name="theme-color" content="#09090b" />
+  <link rel="canonical" href="https://www.developernithish.online/neo4j" />
+  <meta property="og:title" content="Cognitive Code Graph — Local GraphRAG for Code" />
+  <meta property="og:description" content="tree-sitter + Neo4j + a local LLM: ask questions about your codebase and apply verified edits, all on your machine." />
+  <meta property="og:url" content="https://www.developernithish.online/neo4j" />
+  <style>
+    :root {
+      --bg: #09090b; --surface: #111114; --border: #26262b;
+      --text: #ececf0; --muted: #9a9aa5; --accent: #34d399; --accent-dim: rgba(52, 211, 153, .12);
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html { color-scheme: dark; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    a { color: var(--accent); text-underline-offset: 3px; }
+    .wrap { max-width: 860px; margin: 0 auto; padding: 0 16px; }
+    nav { padding: 20px 0; font-size: 14px; }
+    nav a { color: var(--muted); text-decoration: none; }
+    nav a:hover { color: var(--text); }
+    header.hero { padding: 48px 0 40px; }
+    .eyebrow { font: 500 13px var(--mono); color: var(--accent); letter-spacing: .04em; text-transform: uppercase; }
+    h1 { font-size: clamp(30px, 6vw, 46px); line-height: 1.15; margin: 12px 0 16px; letter-spacing: -.02em; }
+    .lead { color: var(--muted); font-size: 18px; max-width: 62ch; margin: 0 0 28px; }
+    .btns { display: flex; gap: 12px; flex-wrap: wrap; }
+    .btn { display: inline-block; padding: 10px 18px; border-radius: 8px; border: 1px solid var(--border); color: var(--text); text-decoration: none; font-weight: 500; }
+    .btn.primary { background: var(--accent); color: #04130c; border-color: var(--accent); }
+    .btn:hover { border-color: var(--accent); }
+    section { padding: 36px 0; border-top: 1px solid var(--border); }
+    h2 { font-size: 22px; margin: 0 0 18px; letter-spacing: -.01em; }
+    .flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; }
+    .step { flex: 1 1 130px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+    .step b { display: block; font-size: 14px; margin-bottom: 4px; }
+    .step span { color: var(--muted); font-size: 13px; }
+    .arrow { align-self: center; color: var(--muted); font-family: var(--mono); }
+    @media (max-width: 640px) { .arrow { display: none; } }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+    .card h3 { margin: 0 0 6px; font-size: 16px; }
+    .card p { margin: 0; color: var(--muted); font-size: 14.5px; }
+    pre { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; overflow-x: auto; font: 14px/1.6 var(--mono); margin: 0 0 14px; }
+    code { font-family: var(--mono); font-size: .92em; background: var(--accent-dim); padding: 1px 6px; border-radius: 5px; }
+    pre code { background: none; padding: 0; }
+    .note { border-left: 3px solid var(--accent); background: var(--accent-dim); padding: 12px 16px; border-radius: 0 8px 8px 0; color: var(--text); font-size: 15px; }
+    ul.tight { padding-left: 20px; color: var(--muted); }
+    ul.tight li { margin: 4px 0; }
+    footer { padding: 32px 0 56px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--border); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <nav><a href="/">&larr; developernithish.online</a></nav>
+
+    <header class="hero">
+      <div class="eyebrow">Project · Local GraphRAG</div>
+      <h1>Cognitive Code Graph</h1>
+      <p class="lead">Turn a codebase into a queryable knowledge graph and ask it questions in plain English. Python, JavaScript and PHP are parsed with tree-sitter into Neo4j, and a local LLM answers using the exact code and call relationships it retrieves. Nothing leaves your machine.</p>
+      <div class="btns">
+        <a class="btn primary" href="https://github.com/Nithish2611/neo4j-local-implemeentation">View on GitHub</a>
+        <a class="btn" href="#use">Use it in your project</a>
+      </div>
+    </header>
+
+    <section>
+      <h2>How it works</h2>
+      <div class="flow">
+        <div class="step"><b>Source files</b><span>.py .js .php</span></div>
+        <div class="arrow">&rarr;</div>
+        <div class="step"><b>tree-sitter</b><span>exact functions, lines and call names</span></div>
+        <div class="arrow">&rarr;</div>
+        <div class="step"><b>Neo4j graph</b><span>File, Function, DEFINED_IN, CALLS</span></div>
+        <div class="arrow">&rarr;</div>
+        <div class="step"><b>Retrieval</b><span>named functions + direct callers and callees</span></div>
+        <div class="arrow">&rarr;</div>
+        <div class="step"><b>Local LLM</b><span>Ollama or Gemini, streamed</span></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>What it does</h2>
+      <div class="grid">
+        <div class="card"><h3>Graph-native retrieval</h3><p>Instead of similar-looking text chunks, the model gets the functions you name plus what calls them and what they call, so answers follow the real execution path.</p></div>
+        <div class="card"><h3>Multi-language parsing</h3><p>Exact node rules per language for Python, JavaScript (including arrow functions and methods) and PHP. Vendor folders and minified bundles are skipped.</p></div>
+        <div class="card"><h3>Chat UI with verified edits</h3><p>A Streamlit chat streams answers and proposes changes as diffs. Nothing is written until you apply it, and edits that would break syntax or touch stale files are refused.</p></div>
+        <div class="card"><h3>Self-healing memory</h3><p>Applying an edit re-ingests just that file and rebuilds its cross-file call links, so the graph never drifts from the code.</p></div>
+      </div>
+    </section>
+
+    <section id="use">
+      <h2>Use it in your own project</h2>
+      <pre><code>pip install "git+https://github.com/Nithish2611/neo4j-local-implemeentation.git"
+
+cognitive-graph --path . --question "How does login work?"
+cognitive-graph --skip-ingest --question "What calls save_user?"</code></pre>
+      <p>You need Python 3.10+, a running Neo4j 5.x, and either Ollama (for example <code>qwen2.5-coder:7b</code>) or a Gemini API key. Connection details go in a <code>.env</code> file. The README has the details.</p>
+    </section>
+
+    <section>
+      <h2>Why there is no live demo</h2>
+      <p class="note">The assistant reads your source code and can edit files, so it is designed to run on your own machine next to your own Neo4j and model. A public instance would have to ship your code to a server, which defeats the point. Clone the repo to try it.</p>
+    </section>
+
+    <footer>
+      Built by Nithish Kumar Gopal · <a href="https://github.com/Nithish2611/neo4j-local-implemeentation">Source on GitHub</a> · <a href="/">Portfolio</a>
+    </footer>
+  </div>
+</body>
+</html>
