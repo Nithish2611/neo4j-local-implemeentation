@@ -20,9 +20,12 @@ dependencies = [
 [project.optional-dependencies]
 gemini = ["google-genai>=1.0"]
 ui = ["streamlit"]
+mcp = ["mcp>=1.2"]
 
 [project.scripts]
 cognitive-graph = "cognitive_graph.cli:main"
+cognitive-graph-mcp = "cognitive_graph.mcp_server:main"
+cognitive-graph-hook = "cognitive_graph.hook:main"
 
 [tool.setuptools]
 packages = ["cognitive_graph"]

@@ -4,7 +4,14 @@
     cognitive-graph --path D:\\repo --question "How does login work?"
     cognitive-graph --skip-ingest --question "..."   # reuse the existing graph
     cognitive-graph --provider gemini
-    cognitive-graph --reset                          # wipe the whole graph first
+    cognitive-graph --reset                          # wipe THIS project's graph first
+
+    cognitive-graph memory ...                       # project memory (see README)
+    cognitive-graph graph legacy-status|adopt-legacy|purge-legacy   # pre-project-scoping data
+    cognitive-graph hook install|uninstall|status|test              # Claude Code prompt hook
+
+Graph data is scoped to the project (its id lives in <project>/.cognitive-graph/project.json,
+created on first use at the Git root).
 """
 import argparse
 import sys
@@ -16,6 +23,7 @@ from cognitive_graph.code_parser import CodeParser
 from cognitive_graph.config import Settings
 from cognitive_graph.graph_db import GraphDatabase
 from cognitive_graph.ingestor import Ingestor
+from cognitive_graph.memory import ensure_project
 from cognitive_graph.llm import build_llm
 
 def parse_args() -> argparse.Namespace:
@@ -25,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--provider", choices=["ollama", "gemini"], help="overrides LLM_PROVIDER")
     p.add_argument("--skip-ingest", action="store_true", help="only ask, reuse the existing graph")
     p.add_argument("--ingest-only", action="store_true", help="only build the graph")
-    p.add_argument("--reset", action="store_true", help="delete ALL graph data before ingesting")
+    p.add_argument("--reset", action="store_true", help="delete this project's graph data before ingesting (other projects are untouched)")
     args = p.parse_args()
     if not args.ingest_only and not args.question:
         p.error("--question is required unless --ingest-only is given")
@@ -33,18 +41,23 @@ def parse_args() -> argparse.Namespace:
 
 
 def run(args: argparse.Namespace) -> None:
-    settings = Settings.from_env()
+    project = ensure_project(args.path)
+    if not project.ok:
+        raise SystemExit(f"Error: {project.message}")
+    settings = Settings.from_env(project.root / ".env")
 
-    with GraphDatabase(settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password) as db:
-        db.verify()
-        db.init_schema()
+    with GraphDatabase(settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password) as base:
+        base.verify()
+        base.init_schema()
+        db = base.scoped(project.project_id)
+        print(f"Project: {project.name} (id {project.project_id}) at {project.root}")
 
         if args.reset:
             db.reset()
-            print("Graph reset.")
+            print("Graph reset for this project.")
 
         if not args.skip_ingest:
-            report = Ingestor(CodeParser(), db).ingest_path(args.path)
+            report = Ingestor(CodeParser(), db).ingest_path(args.path, root=project.root)
             print(f"Ingested {report.functions} functions from {report.files} file(s); "
                   f"{report.calls} CALLS relationship(s)"
                   + (f"; {report.skipped} file(s) skipped." if report.skipped else "."))
@@ -61,6 +74,15 @@ def run(args: argparse.Namespace) -> None:
 
 
 def main() -> int:
+    if sys.argv[1:2] == ["memory"]:
+        from cognitive_graph.memory_cli import run as run_memory
+        return run_memory(sys.argv[2:])
+    if sys.argv[1:2] == ["graph"]:
+        from cognitive_graph.graph_admin import run as run_graph
+        return run_graph(sys.argv[2:])
+    if sys.argv[1:2] == ["hook"]:
+        from cognitive_graph.hook_cli import run as run_hook
+        return run_hook(sys.argv[2:])
     try:
         run(parse_args())
     except ServiceUnavailable:

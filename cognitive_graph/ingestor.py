@@ -30,9 +30,11 @@ class Ingestor:
 
     # --- full ingestion -----------------------------------------------------
 
-    def ingest_path(self, target: str | Path) -> IngestReport:
+    def ingest_path(self, target: str | Path, root: str | Path | None = None) -> IngestReport:
+        """Ingest `target`. Paths are stored relative to `root` (the project root, so the
+        graph, memory evidence and edits agree); by default relative to the target itself."""
         target = Path(target).resolve()
-        root = target.parent if target.is_file() else target
+        root = Path(root).resolve() if root else (target.parent if target.is_file() else target)
         parsed: dict[str, list[FunctionEntity]] = {}
         skipped = 0
 

@@ -11,6 +11,7 @@ from cognitive_graph.editor import EditError, Proposal, apply_proposal, parse_pr
 from cognitive_graph.graph_db import GraphDatabase
 from cognitive_graph.ingestor import Ingestor
 from cognitive_graph.llm import build_llm
+from cognitive_graph.memory import ensure_project
 
 st.set_page_config(page_title="Code Graph Assistant", page_icon="🧠", layout="wide")
 
@@ -20,11 +21,10 @@ st.set_page_config(page_title="Code Graph Assistant", page_icon="🧠", layout="
 @st.cache_resource
 def get_backend():
     settings = Settings.from_env()
-    db = GraphDatabase(settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password)
-    db.verify()
-    db.init_schema()
-    parser = CodeParser()
-    return settings, db, parser, Ingestor(parser, db)
+    base_db = GraphDatabase(settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password)
+    base_db.verify()
+    base_db.init_schema()
+    return settings, base_db, CodeParser()
 
 
 @st.cache_resource
@@ -33,7 +33,7 @@ def get_llm(provider: str):
 
 
 try:
-    settings, db, parser, ingestor = get_backend()
+    settings, base_db, parser = get_backend()
 except ServiceUnavailable:
     st.error("Cannot reach Neo4j. Start it and check NEO4J_URI in .env, then reload.")
     st.stop()
@@ -46,16 +46,25 @@ st.session_state.setdefault("confirm_clear", False)
 st.session_state.setdefault("project_path", str(Path("sample_project").resolve()))
 
 
-def project_root() -> Path:
-    path = Path(st.session_state.project_path).expanduser()
-    return path if path.is_dir() else path.parent
+def project_backend():
+    """(project, graph handle, ingestor) for the folder in the sidebar. Every graph call goes
+    through a handle scoped to that folder's project id, so projects never mix. The id is
+    created on first use at the Git root (or the folder) in .cognitive-graph/project.json."""
+    proj = ensure_project(Path(st.session_state.project_path).expanduser())
+    if not proj.ok:
+        return proj, None, None
+    scoped = base_db.scoped(proj.project_id)
+    return proj, scoped, Ingestor(parser, scoped)
 
 
 # --- callbacks (run before the next rerun, so state is fresh when the page redraws) ---
 
 def on_apply(proposal: Proposal) -> None:
     try:
-        proposal.message = apply_proposal(proposal, project_root(), db, parser, ingestor)
+        proj, db, ingestor = project_backend()
+        if db is None:
+            raise EditError(proj.message)
+        proposal.message = apply_proposal(proposal, proj.root, db, parser, ingestor)
         proposal.status = "applied"
     except EditError as exc:
         proposal.status, proposal.message = "failed", str(exc)
@@ -69,7 +78,10 @@ def on_discard(proposal: Proposal) -> None:
 
 def on_full_ingest() -> None:
     try:
-        r = ingestor.ingest_path(st.session_state.project_path)
+        proj, db, ingestor = project_backend()
+        if db is None:
+            raise RuntimeError(proj.message)
+        r = ingestor.ingest_path(st.session_state.project_path, root=proj.root)
         st.session_state.notice = (
             "success",
             f"Ingested {r.functions} functions from {r.files} file(s), {r.calls} call link(s)"
@@ -80,9 +92,13 @@ def on_full_ingest() -> None:
 
 
 def on_clear_graph() -> None:
-    db.reset()
+    proj, db, _ = project_backend()
+    if db is None:
+        st.session_state.notice = ("error", proj.message)
+    else:
+        db.reset()
+        st.session_state.notice = ("success", f"Graph memory cleared for project {proj.name}.")
     st.session_state.confirm_clear = False
-    st.session_state.notice = ("success", "Graph memory cleared.")
 
 
 # --- sidebar --------------------------------------------------------------------
@@ -101,7 +117,7 @@ with st.sidebar:
               use_container_width=True)
 
     if st.session_state.confirm_clear:
-        st.warning("This deletes every node and relationship in the Neo4j database.")
+        st.warning("This deletes this project's graph data. Other projects are not touched.")
         left, right = st.columns(2)
         left.button("Yes, delete", type="primary", on_click=on_clear_graph, use_container_width=True)
         right.button("Cancel", on_click=lambda: st.session_state.update(confirm_clear=False),
@@ -113,6 +129,11 @@ with st.sidebar:
     if notice := st.session_state.pop("notice", None):
         getattr(st, notice[0])(notice[1])
 
+    project, db, _ = project_backend()
+    if db is None:
+        st.warning(project.message)
+        st.stop()
+    st.caption(f"Project: {project.name} (id {project.project_id})")
     stats = db.stats()
     a, b, c = st.columns(3)
     a.metric("Files", stats["files"])
