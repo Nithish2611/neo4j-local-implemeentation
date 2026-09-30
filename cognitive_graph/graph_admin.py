@@ -52,7 +52,7 @@ def run(argv: list[str]) -> int:
         s = Settings.from_env(res.root / ".env")
         with GraphDatabase(s.neo4j_uri, s.neo4j_user, s.neo4j_password, connection_timeout=5) as base:
             base.verify()
-            db = base.scoped(res.project_id)
+            db = base.scoped(res.graph_id)
             if a.cmd == "purge-legacy":
                 if not a.yes:
                     print("Refusing without --yes: this deletes ALL nodes that have no project id.", file=sys.stderr)

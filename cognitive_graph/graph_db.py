@@ -38,6 +38,9 @@ CREATE (n:Function {
 CREATE (n)-[:DEFINED_IN {project_id: $pid}]->(f)
 """
 
+_DELETE_FILES_FUNCTIONS = "MATCH (fn:Function {project_id: $pid}) WHERE fn.file_path IN $paths DETACH DELETE fn"
+_DELETE_FILE_NODES = "MATCH (f:File {project_id: $pid}) WHERE f.path IN $paths DETACH DELETE f"
+
 _LINK_CALLS = """
 UNWIND $edges AS e
 MATCH (a:Function {project_id: $pid, file_path: e.from_path, name: e.from_name, start_line: e.from_line})
@@ -159,6 +162,12 @@ class GraphDatabase:
 
         with self._driver.session() as session:
             session.execute_write(tx_fn)
+
+    def delete_files(self, paths: list[str]) -> None:
+        """Remove files that no longer exist (their functions and every call edge touching them)."""
+        if paths:
+            self._driver.execute_query(_DELETE_FILES_FUNCTIONS, pid=self._pid, paths=list(paths))
+            self._driver.execute_query(_DELETE_FILE_NODES, pid=self._pid, paths=list(paths))
 
     def link_calls(self, edges: list[dict]) -> None:
         if edges:

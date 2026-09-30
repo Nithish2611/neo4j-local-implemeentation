@@ -7,6 +7,7 @@
     cognitive-graph --reset                          # wipe THIS project's graph first
 
     cognitive-graph memory ...                       # project memory (see README)
+    cognitive-graph sync [--full] [--status]         # the hooks do this automatically; manual trigger
     cognitive-graph graph legacy-status|adopt-legacy|purge-legacy   # pre-project-scoping data
     cognitive-graph hook install|uninstall|status|test              # Claude Code prompt hook
 
@@ -49,7 +50,7 @@ def run(args: argparse.Namespace) -> None:
     with GraphDatabase(settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password) as base:
         base.verify()
         base.init_schema()
-        db = base.scoped(project.project_id)
+        db = base.scoped(project.graph_id)
         print(f"Project: {project.name} (id {project.project_id}) at {project.root}")
 
         if args.reset:
@@ -77,6 +78,9 @@ def main() -> int:
     if sys.argv[1:2] == ["memory"]:
         from cognitive_graph.memory_cli import run as run_memory
         return run_memory(sys.argv[2:])
+    if sys.argv[1:2] == ["sync"]:
+        from cognitive_graph.graph_sync import run_cli as run_sync_cli
+        return run_sync_cli(sys.argv[2:])
     if sys.argv[1:2] == ["graph"]:
         from cognitive_graph.graph_admin import run as run_graph
         return run_graph(sys.argv[2:])

@@ -26,6 +26,8 @@ mcp = ["mcp>=1.2"]
 cognitive-graph = "cognitive_graph.cli:main"
 cognitive-graph-mcp = "cognitive_graph.mcp_server:main"
 cognitive-graph-hook = "cognitive_graph.hook:main"
+cognitive-graph-session-end = "cognitive_graph.session_end:main"
+cognitive-graph-session-start = "cognitive_graph.session_start:main"
 
 [tool.setuptools]
 packages = ["cognitive_graph"]

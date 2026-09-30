@@ -1,16 +1,13 @@
 """Walks a project, parses every supported source file and writes the code graph."""
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from neo4j.exceptions import ClientError
 
 from .code_parser import CodeParser, FunctionEntity
 from .graph_db import GraphDatabase
-
-SKIP_DIRS = {".git", ".venv", "venv", "env", "__pycache__", "node_modules", "legacy", "build", "dist", "vendor", "vendor_php"}
-# Third-party bundles that are commonly checked in next to first-party code.
-SKIP_FILE_HINTS = ("jquery", "bootstrap", "modernizr", "popper", "slick", "chart.js", "chart.min", "chart.bundle")
+from .indexing_rules import SKIP_DIRS, SKIP_FILE_HINTS
 
 Symbol = tuple[str, str, int]  # (path, name, start_line): identifies one Function node
 
@@ -21,6 +18,8 @@ class IngestReport:
     functions: int = 0
     calls: int = 0
     skipped: int = 0
+    indexed: list[str] = field(default_factory=list)  # relative paths written to the graph
+    failed: list[str] = field(default_factory=list)   # relative paths that could not be parsed/written
 
 
 class Ingestor:
@@ -101,6 +100,44 @@ class Ingestor:
         edges = self._resolve_calls(callers.items(), index)
         self._db.link_calls(edges)
         return IngestReport(files=1, functions=len(functions), calls=len(edges))
+
+    def ingest_files(self, root: str | Path, files: Iterable[str | Path]) -> IngestReport:
+        """Ingest a batch of files (paths relative to `root`, or absolute inside it).
+
+        Only these files are re-parsed and replaced. Calls in untouched files that point at
+        functions defined here are re-linked, because replacing a file drops the edges into it."""
+        root = Path(root).resolve()
+        parsed: dict[str, list[FunctionEntity]] = {}
+        failed: list[str] = []
+        for f in files:
+            path = (root / f).resolve()
+            rel = path.relative_to(root).as_posix()
+            try:
+                parsed[rel] = self._parser.parse_file(path)
+            except Exception:  # one unreadable file must not stop the batch
+                failed.append(rel)
+        for rel in list(parsed):
+            try:
+                self._db.replace_file(rel, parsed[rel])
+            except ClientError:
+                del parsed[rel]
+                failed.append(rel)
+
+        callers: dict[Symbol, Iterable[str]] = {
+            (rel, fn.name, fn.start_line): fn.calls for rel, fns in parsed.items() for fn in fns}
+        defined = {fn.name for fns in parsed.values() for fn in fns}
+        if defined:
+            for row in self._db.functions_calling(defined):
+                callers.setdefault((row["path"], row["name"], row["start_line"]), row["calls"])
+        call_names = {name for calls in callers.values() for name in calls}
+        index: dict[str, list[Symbol]] = {}
+        if call_names:
+            for row in self._db.functions_named(call_names):
+                index.setdefault(row["name"], []).append((row["path"], row["name"], row["start_line"]))
+        edges = self._resolve_calls(callers.items(), index)
+        self._db.link_calls(edges)
+        return IngestReport(files=len(parsed), functions=sum(len(v) for v in parsed.values()), calls=len(edges),
+                            skipped=len(failed), indexed=sorted(parsed), failed=failed)
 
     # --- helpers --------------------------------------------------------------
 

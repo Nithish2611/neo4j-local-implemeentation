@@ -84,7 +84,7 @@ def neo4j_fetch(res: ProjectResolution, prompt: str, cfg: HookConfig) -> list[di
     with GraphDatabase(s.neo4j_uri, s.neo4j_user, s.neo4j_password,
                        connection_timeout=min(cfg.timeout, 2.0)) as base:
         base.verify()
-        return base.scoped(res.project_id).find_relevant(prompt, cfg.max_functions)
+        return base.scoped(res.graph_id or res.project_id).find_relevant(prompt, cfg.max_functions)
 
 
 def _with_timeout(fn: Callable[[], list[dict]], seconds: float) -> list[dict]:
@@ -114,12 +114,14 @@ def _line(item: Item, root: Path) -> str:
     trust = "confirmed" if item.trust == "confirmed" else "UNCONFIRMED"
     body = " ".join(item.body.split())
     if item.type == "handoff":
-        text = body[:260] + ("..." if len(body) > 260 else "")
+        # auto-captured handoffs open with a one-paragraph summary; manual ones are short prose
+        lead = " ".join(item.body.split("\n\n", 1)[0].split()) if "auto" in item.tags else body
+        text = lead[:400] + ("..." if len(lead) > 400 else "")
     else:
         text = item.title + (f": {body[:140]}{'...' if len(body) > 140 else ''}" if body else "")
-    ev = [e + ("" if e.startswith(("commit:", "user:", "http")) or (root / e).exists() else " (missing)")
-          for e in item.evidence[:3]]
-    if item.commit:
+    ev = [e + ("" if e.startswith(("commit:", "user:", "session:", "http")) or (root / e).exists() else " (missing)")
+          for e in item.evidence[:4]]
+    if item.commit and f"commit:{item.commit}" not in ev:
         ev.append(f"commit:{item.commit}")
     return f"- [{item.id}] {item.type}, {item.status}, {trust}: {text}" + (f" (evidence: {'; '.join(ev)})" if ev else "")
 
@@ -142,10 +144,14 @@ def select_memories(store: MemoryStore, prompt: str, cfg: HookConfig) -> list[It
             chosen[item.id] = item
     if RESUME_RE.search(prompt):
         items = store.items()
-        handoffs = sorted((i for i in items if i.type == "handoff"), key=lambda i: i.created)[-1:]
+        handoffs = sorted((i for i in items if i.type == "handoff"), key=lambda i: (i.created, i.id))[-1:]
         tasks = sorted((i for i in items if i.is_open_task), key=lambda i: i.created, reverse=True)[:3]
         for item in [*handoffs, *tasks]:
             chosen.setdefault(item.id, item)
+    # Only the newest relevant handoff: older sessions' handoffs would just crowd the brief.
+    handoffs = sorted((i for i in chosen.values() if i.type == "handoff"), key=lambda i: (i.created, i.id))
+    for old in handoffs[:-1]:
+        del chosen[old.id]
     return list(chosen.values())[: cfg.max_memories]
 
 

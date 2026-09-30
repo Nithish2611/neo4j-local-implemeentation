@@ -53,7 +53,7 @@ def project_backend():
     proj = ensure_project(Path(st.session_state.project_path).expanduser())
     if not proj.ok:
         return proj, None, None
-    scoped = base_db.scoped(proj.project_id)
+    scoped = base_db.scoped(proj.graph_id)
     return proj, scoped, Ingestor(parser, scoped)
 
 

@@ -13,7 +13,7 @@ from cognitive_graph.hook import handle
 from cognitive_graph.memory import MemoryStore, ensure_project
 from cognitive_graph.retrieval import HookConfig, prompt_brief
 
-ENV = {}  # empty environment for handle(): defaults only, no .env leakage
+ENV = {"COGNITIVE_GRAPH_SYNC": "off"}  # defaults only, no .env leakage; background sync off so tests never spawn processes
 
 
 @pytest.fixture
@@ -40,8 +40,8 @@ def graph_hit(res, prompt, cfg):
              "code": "def charge_invoice():\n    pass", "calls": ["stripe_charge"], "called_by": ["run_billing"]}]
 
 
-def out_of(root, prompt, graph=no_graph, env=ENV):
-    return handle({"cwd": str(root), "prompt": prompt, "hook_event_name": "UserPromptSubmit"}, env, graph)
+def out_of(root, prompt, graph=no_graph, env=None):
+    return handle({"cwd": str(root), "prompt": prompt, "hook_event_name": "UserPromptSubmit"}, {**ENV, **(env or {})}, graph)
 
 
 # --- output contract -----------------------------------------------------------------
@@ -148,8 +148,8 @@ def test_uninitialised_project_gets_no_context_and_no_fallback(tmp_path, axis):
     other = tmp_path / "fresh-repo"
     other.mkdir()
     subprocess.run(["git", "init", "-q", str(other)], check=True)
-    assert out_of(other, "how are invoices charged with stripe?") is None
-    msg = out_of(other, "how are invoices charged with stripe?", env={"COGNITIVE_GRAPH_HOOK_VERBOSE": "1"})
+    assert out_of(other, "how are invoices charged with stripe?", env={"COGNITIVE_GRAPH_AUTO_INIT": "off"}) is None
+    msg = out_of(other, "how are invoices charged with stripe?", env={"COGNITIVE_GRAPH_HOOK_VERBOSE": "1", "COGNITIVE_GRAPH_AUTO_INIT": "off"})
     assert "hookSpecificOutput" not in msg and "memory init" in msg["systemMessage"]
 
 
@@ -208,7 +208,7 @@ def test_main_never_blocks_and_ignores_garbage_input(monkeypatch, capsys):
 
 def test_main_end_to_end_as_a_subprocess(axis):
     payload = json.dumps({"cwd": str(axis), "prompt": "how are invoices charged with stripe?"})
-    env = {**os.environ, "COGNITIVE_GRAPH_HOOK_GRAPH": "off"}
+    env = {**os.environ, "COGNITIVE_GRAPH_HOOK_GRAPH": "off", "COGNITIVE_GRAPH_SYNC": "off"}
     r = subprocess.run([sys.executable, "-m", "cognitive_graph.hook"], input=payload, capture_output=True,
                        text=True, timeout=30, env=env)
     assert r.returncode == 0
@@ -298,7 +298,7 @@ def test_installing_below_the_git_root_warns(tmp_path, fake_home, capsys):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     sub = tmp_path / "pkg"
     sub.mkdir()
-    assert hook_cli.run(["--project", str(sub), "install"]) == 0
+    assert hook_cli.run(["--project", str(sub), "install", "--scope", "local"]) == 0
     assert "not the Git root" in capsys.readouterr().out
     assert (sub / ".claude" / "settings.local.json").exists() and not (tmp_path / ".claude").exists()
 
