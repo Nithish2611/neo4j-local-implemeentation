@@ -11,6 +11,7 @@ from pathlib import Path
 from neo4j import GraphDatabase as Neo4jDriver
 
 from .code_parser import FunctionEntity
+from .terms import search_query, split_identifier, rank, task_terms
 
 # Constraints from before project scoping. They made (path) and
 # (file_path, name, start_line) unique across the WHOLE database, which would stop
@@ -24,6 +25,12 @@ _CONSTRAINTS = [
     "FOR (fn:Function) REQUIRE (fn.project_id, fn.file_path, fn.name, fn.start_line) IS UNIQUE",
 ]
 
+# Full-text index for plain-language task lookup. It is shared by all projects, so every query that uses it
+# filters on project_id afterwards. Lexical (word) matching, not semantic.
+FULLTEXT_INDEX = "function_text"
+_FULLTEXT = (f"CREATE FULLTEXT INDEX {FULLTEXT_INDEX} IF NOT EXISTS FOR (fn:Function) "
+             "ON EACH [fn.name, fn.file_path, fn.search_text, fn.raw_code]")
+
 _DELETE_FILE_FUNCTIONS = "MATCH (fn:Function {project_id: $pid, file_path: $path}) DETACH DELETE fn"
 
 _CREATE_FILE_AND_FUNCTIONS = """
@@ -33,7 +40,8 @@ WITH f
 UNWIND $functions AS fn
 CREATE (n:Function {
   project_id: $pid, file_path: $path, name: fn.name, start_line: fn.start_line,
-  end_line: fn.end_line, lines: fn.lines, raw_code: fn.raw_code, calls: fn.calls
+  end_line: fn.end_line, lines: fn.lines, raw_code: fn.raw_code, calls: fn.calls,
+  search_text: fn.search_text
 })
 CREATE (n)-[:DEFINED_IN {project_id: $pid}]->(f)
 """
@@ -128,6 +136,7 @@ class GraphDatabase:
             self._driver.execute_query(f"DROP CONSTRAINT {name} IF EXISTS")
         for stmt in _CONSTRAINTS:
             self._driver.execute_query(stmt)
+        self._driver.execute_query(_FULLTEXT)
 
     def reset(self) -> None:
         """Delete this project's graph data. Other projects are untouched."""
@@ -141,8 +150,10 @@ class GraphDatabase:
         """Atomically replace a file's functions, so re-ingesting never leaves
         stale nodes behind (e.g. a function that moved or was deleted)."""
         pid = self._pid
+        path_words = " ".join(split_identifier(path.replace("/", " ").replace(".", " ")))
         payload = [
             {
+                "search_text": " ".join(split_identifier(f.name)) + " " + path_words,
                 "name": f.name,
                 "raw_code": f.raw_code,
                 "start_line": f.start_line,
@@ -210,6 +221,43 @@ class GraphDatabase:
             return []
         records, _, _ = self._driver.execute_query(_SEEDS, pid=pid, names=names, paths=paths, limit=limit)
         return [r.data() for r in records]
+
+    def find_by_task(self, task: str, limit: int = 5, expand: int = 3, candidates: int = 300) -> list[dict]:
+        """Functions matching a plain-language task, ranked and labelled (see terms.rank), with callers and
+        callees for the top `expand`. Candidates come from the shared full-text index and are kept only
+        when their project_id is this project's: other projects can never appear in the result."""
+        pid = self._pid
+        terms = task_terms(task)
+        query = search_query(task)
+        if len(terms) < 2 or not query:
+            return []
+        records, _, _ = self._driver.execute_query(
+            f"CALL db.index.fulltext.queryNodes('{FULLTEXT_INDEX}', $q, {{limit: $n}}) YIELD node, score "
+            "WHERE node.project_id = $pid "
+            "RETURN node.file_path AS file, node.name AS name, node.start_line AS start_line, "
+            "node.raw_code AS code, score AS ft",
+            q=query, n=candidates, pid=pid)
+        ranked = rank(terms, [r.data() for r in records], limit)
+        if ranked and expand > 0:
+            keys = [{"path": r["file"], "name": r["name"], "line": r["start_line"]} for r in ranked[:expand]]
+            records, _, _ = self._driver.execute_query(
+                """
+                UNWIND $keys AS k
+                MATCH (fn:Function {project_id: $pid, file_path: k.path, name: k.name, start_line: k.line})
+                OPTIONAL MATCH (fn)-[:CALLS]->(callee:Function {project_id: $pid})
+                OPTIONAL MATCH (caller:Function {project_id: $pid})-[:CALLS]->(fn)
+                RETURN fn.file_path AS file, fn.name AS name, fn.start_line AS start_line,
+                       collect(DISTINCT callee.name) AS calls, collect(DISTINCT caller.name) AS called_by
+                """,
+                keys=keys, pid=pid)
+            neighbours = {(r["file"], r["name"], r["start_line"]): r.data() for r in records}
+            for row in ranked[:expand]:
+                n = neighbours.get((row["file"], row["name"], row["start_line"]), {})
+                row["calls"], row["called_by"] = n.get("calls", []), n.get("called_by", [])
+        for row in ranked:
+            row.setdefault("calls", [])
+            row.setdefault("called_by", [])
+        return ranked
 
     def stats(self) -> dict:
         records, _, _ = self._driver.execute_query(

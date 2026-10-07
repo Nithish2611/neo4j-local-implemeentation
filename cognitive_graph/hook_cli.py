@@ -149,6 +149,8 @@ def run(argv: list[str]) -> int:
     pv = hs.add_parser("preview", help="print the handoff that would be saved now; writes nothing")
     pv.add_argument("--transcript", help="a Claude Code transcript .jsonl to read edited-file paths from")
     sub.add_parser("status", help="show install state, the resolved project and graph reachability")
+    hp = sub.add_parser("helper", help="the warm graph helper: status | stop")
+    hp.add_argument("action", choices=["status", "stop"])
     t = sub.add_parser("test", help="run the prompt hook on a sample prompt, as Claude Code would")
     t.add_argument("prompt")
     a = p.parse_args(argv)
@@ -205,6 +207,10 @@ def run(argv: list[str]) -> int:
                     print("Neo4j: reachable")
                 except Exception as exc:
                     print(f"Neo4j: unavailable ({type(exc).__name__}); the prompt hook will use memory only")
+        elif a.cmd == "helper":
+            from . import graph_helper
+
+            print(graph_helper.stop() if a.action == "stop" else graph_helper.status())
         elif a.cmd == "test":
             out = handle({"cwd": str(base), "prompt": a.prompt}) or {}
             print(out.get("hookSpecificOutput", {}).get("additionalContext", "(no context would be injected)"))

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "cognitive-graph"
 version = "0.1.0"
-description = "Local code-graph RAG: tree-sitter -> Neo4j -> LLM assistant (Python, JavaScript, PHP)"
+description = "Local code-graph RAG: tree-sitter -> Neo4j -> the local Claude Code CLI"
 requires-python = ">=3.10"
 dependencies = [
     "neo4j>=5.20,<7",
@@ -14,11 +14,9 @@ dependencies = [
     "tree-sitter-javascript>=0.23",
     "tree-sitter-php>=0.23",
     "python-dotenv>=1.0",
-    "openai>=1.40",
 ]
 
 [project.optional-dependencies]
-gemini = ["google-genai>=1.0"]
 ui = ["streamlit"]
 mcp = ["mcp>=1.2"]
 

@@ -517,7 +517,7 @@ def test_graph_and_sync_unavailable_are_both_reported_while_memory_still_works(t
     def down(res, prompt, cfg):
         raise ConnectionError()
 
-    out = prompt_handle({"cwd": str(root), "prompt": "how are invoices charged with stripe?"}, QUIET, down,
+    out = prompt_handle({"cwd": str(root), "prompt": "how are invoices charged with stripe? see charge_invoice"}, QUIET, down,
                         lambda *a, **k: "graph sync unavailable (Neo4j is not reachable); will retry")
     assert "Invoices use Stripe" in out["hookSpecificOutput"]["additionalContext"]
     assert "code graph unavailable" in out["systemMessage"] and "graph sync unavailable (Neo4j is not reachable)" in out["systemMessage"]
@@ -611,8 +611,10 @@ def test_installer_sets_up_all_three_hooks_at_user_scope_by_default(tmp_path, mo
     data = json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8"))
     assert sorted(data["hooks"]) == ["SessionEnd", "SessionStart", "UserPromptSubmit"]
     cmds = {e: g[0]["hooks"][0]["command"] for e, g in data["hooks"].items()}
-    assert "session_start" in cmds["SessionStart"] and "session_end" in cmds["SessionEnd"] and cmds["UserPromptSubmit"].endswith("hook") \
-        or "cognitive_graph.hook" in cmds["UserPromptSubmit"]
+    # the bare console command when it is on PATH, otherwise `python -m <module>`
+    assert "session-start" in cmds["SessionStart"] or "session_start" in cmds["SessionStart"]
+    assert "session-end" in cmds["SessionEnd"] or "session_end" in cmds["SessionEnd"]
+    assert "cognitive-graph-hook" in cmds["UserPromptSubmit"] or "cognitive_graph.hook" in cmds["UserPromptSubmit"]
     assert not (proj / ".claude").exists()  # nothing per project
     hook_cli.run(["--project", str(proj), "install"])
     assert all(len(g) == 1 for g in json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8"))["hooks"].values())

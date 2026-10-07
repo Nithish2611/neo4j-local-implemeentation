@@ -7,7 +7,7 @@ from neo4j.exceptions import ClientError
 
 from .code_parser import CodeParser, FunctionEntity
 from .graph_db import GraphDatabase
-from .indexing_rules import SKIP_DIRS, SKIP_FILE_HINTS
+from .indexing_rules import is_indexable, load_ignore
 
 Symbol = tuple[str, str, int]  # (path, name, start_line): identifies one Function node
 
@@ -37,7 +37,8 @@ class Ingestor:
         parsed: dict[str, list[FunctionEntity]] = {}
         skipped = 0
 
-        for file in self._source_files(target):
+        ignore = load_ignore(root)
+        for file in self._source_files(target, root, ignore):
             rel = file.relative_to(root).as_posix()
             try:
                 parsed[rel] = self._parser.parse_file(file)
@@ -141,20 +142,23 @@ class Ingestor:
 
     # --- helpers --------------------------------------------------------------
 
-    def _source_files(self, target: Path):
+    def _source_files(self, target: Path, root: Path | None = None, ignore=()):
+        """Indexable files under `target`. Built-in rules apply relative to `target`; the project ignore
+        patterns apply relative to the project `root`."""
         supported = self._parser.supported_extensions
         if target.is_file():
             if target.suffix.lower() in supported:
                 yield target
             return
         for file in sorted(target.rglob("*")):
-            name = file.name.lower()
-            if file.suffix.lower() not in supported or name.endswith(".min.js"):
+            if not file.is_file() or not is_indexable(file.relative_to(target).parts, supported):
                 continue
-            if any(hint in name for hint in SKIP_FILE_HINTS):
-                continue
-            if not SKIP_DIRS.intersection(file.relative_to(target).parts[:-1]) and file.is_file():
-                yield file
+            if ignore and root is not None:
+                from .indexing_rules import matches_ignore
+
+                if matches_ignore(file.relative_to(root).as_posix(), ignore):
+                    continue
+            yield file
 
     @staticmethod
     def _resolve_calls(

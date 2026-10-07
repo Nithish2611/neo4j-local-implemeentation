@@ -3,7 +3,6 @@
     cognitive-graph --question "How does login work?"   # ingest the current folder, then ask
     cognitive-graph --path D:\\repo --question "How does login work?"
     cognitive-graph --skip-ingest --question "..."   # reuse the existing graph
-    cognitive-graph --provider gemini
     cognitive-graph --reset                          # wipe THIS project's graph first
 
     cognitive-graph memory ...                       # project memory (see README)
@@ -31,7 +30,6 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Zero-Loss Cognitive Code Graph")
     p.add_argument("--path", default=".", help="file or folder to ingest (default: current folder)")
     p.add_argument("--question", help="what to ask (required unless --ingest-only)")
-    p.add_argument("--provider", choices=["ollama", "gemini"], help="overrides LLM_PROVIDER")
     p.add_argument("--skip-ingest", action="store_true", help="only ask, reuse the existing graph")
     p.add_argument("--ingest-only", action="store_true", help="only build the graph")
     p.add_argument("--reset", action="store_true", help="delete this project's graph data before ingesting (other projects are untouched)")
@@ -65,7 +63,7 @@ def run(args: argparse.Namespace) -> None:
         if args.ingest_only:
             return
 
-        llm = build_llm(settings, args.provider)
+        llm = build_llm(settings)
         print(f"\nQuestion: {args.question}")
         print(f"Asking {llm.name} ...\n")
         answer = CodeAgent(db, llm).ask(args.question)

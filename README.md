@@ -1,8 +1,9 @@
 # cognitive-graph
 
 A local, private "code-native GraphRAG": tree-sitter parses your code (Python,
-JavaScript, PHP) into a Neo4j graph of files, functions and `CALLS` edges, and a
-local LLM (Ollama, or Gemini) answers questions grounded in that graph.
+JavaScript, PHP) into a Neo4j graph of files, functions and `CALLS` edges, and the
+local `claude` CLI (Claude Code, already installed and logged in) answers questions
+grounded in that graph.
 
 ```
 File -[:DEFINED_IN]- Function -[:CALLS]-> Function
@@ -10,12 +11,13 @@ File -[:DEFINED_IN]- Function -[:CALLS]-> Function
 
 ## Use it in any project
 
-Requirements: Python 3.10+, a running Neo4j (5.x), and either Ollama
-(`ollama pull qwen2.5-coder:7b`) or a Gemini API key.
+Requirements: Python 3.10+, a running Neo4j (5.x), and the `claude` CLI on PATH,
+logged in (run `claude` once if you haven't). No API key or local model server
+is needed: whichever account `claude` is logged in with answers the question.
 
 ```bash
 pip install "git+https://github.com/Nithish2611/neo4j-local-implemeentation.git@phase-1-development"
-# optional extras:  ...#egg=cognitive-graph[gemini,ui]
+# optional extras:  ...#egg=cognitive-graph[ui]
 ```
 
 Create a `.env` in the project you want to analyse (see `.env.example`):
@@ -24,7 +26,6 @@ Create a `.env` in the project you want to analyse (see `.env.example`):
 NEO4J_URI=bolt://127.0.0.1:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=your-password
-LLM_PROVIDER=ollama
 ```
 
 Then, from that project's folder:
@@ -65,7 +66,7 @@ no `--ingest-only`, no `memory handoff`. Open Claude Code in a Git project and w
 ### One-time setup (once per machine)
 
 ```bash
-pip install "cognitive-graph[ui,gemini]"     # or `pip install -e ".[ui,gemini]"` from a clone
+pip install "cognitive-graph[ui]"             # or `pip install -e ".[ui]"` from a clone
 cognitive-graph hook install                  # user scope: writes ~/.claude/settings.json, covers every project
 cognitive-graph hook status                   # optional check: hooks, this folder's project, sync state, Neo4j
 ```
@@ -287,6 +288,68 @@ Claude Code's working directory, and adds a short brief from **that project only
 and its slice of the Neo4j graph. Claude Code's own context, memory and compaction are untouched, your
 prompt is not modified, and the hook never blocks (it always exits 0).
 
+### Plain-language task retrieval
+
+You don't need to know function names. A prompt with at least two meaningful words (for example "where does the
+helper decide a running process is stale?") is looked up in the project's graph:
+
+- **Full-text index** (`function_text`) over function names, split name words (`chargeInvoice` -> charge, invoice),
+  file paths and function bodies. Words are matched with light stemming (`charging` ~ `charge`).
+- **Ranking and labels:** each hit is `strong` (name words agree), `weak` (one distinctive name word, or three
+  body words) or `ambiguous` (the runner-up scores within 20%, so the answer could be either). The reason is shown
+  (`name: charg, invoic; text: retry`).
+- **Expansion:** only the top `COGNITIVE_GRAPH_HOOK_EXPAND` (default 3) hits show their callers and callees.
+- **Noise control:** test files are skipped unless the task is about tests; body-only evidence needs three different
+  words; irrelevant prompts ("rename this variable to something clearer") inject nothing.
+- **Stale entries** are still dropped when their first line no longer exists in the file.
+- **Scope:** the index is shared by all projects, so every result is filtered to the project id before it is used.
+
+**What it is not:** lexical matching, not semantic understanding. "payment" will not find `charge_invoice` unless
+those words appear in the code. The labels are a guide, not a guarantee; check the code the note points to.
+
+The split words are new in this version. The first sync after upgrading re-indexes each project once (it is shown as
+an initial indexing run). Measured on this repository: plain-language questions found the relevant functions
+(for example `_start_helper` for "where does the helper decide a running process is stale?"), and unrelated tasks
+injected nothing.
+
+### Retrieval benchmark (lexical, no model)
+
+`benchmarks/run_retrieval_benchmark.py` scores the shipped lexical retrieval on this repository's own functions. It
+is pure Python: no model, no network, about 40 ms per query. The 36 cases are 24 plain-language tasks (function name
+unknown), 4 exact-name queries, 5 error-messages and 2 negatives with no answer in the code. Run:
+`python benchmarks/run_retrieval_benchmark.py`.
+
+Current (583 functions): plain-language top-1 0.48 and top-5 0.64; exact-name 1.00; error-message top-1 0.80 and top-5 0.80; negatives produced 8 false injections. Two thresholds were measured and not adopted: a relative full-text threshold (it removed false injections only by losing natural-language matches) and a stricter rule for body-only matches (no change). Neo4j's full-text score is used only to break ties. The gold answers were written by hand, the set is small, and the numbers are a baseline, not a claim.
+
+Semantic search was not adopted. An earlier experiment with a local embedding model was run and then removed at
+your request; its results are not part of this project. No semantic or hosted-API code is enabled.
+
+### Warm graph helper (why graph lookups stay fast)
+
+Importing the Neo4j driver costs about 0.8 s on an idle machine and 12 to 14 s on a fully loaded one. The
+prompt hook is a fresh Python process per prompt, so the import used to run inside the hook's 3-second budget and
+busy machines reported `code graph unavailable (TimeoutError)`. Now:
+
+- **Plain prompts skip the graph.** The graph is only consulted when the prompt contains a code-like identifier
+  (`run_sync`, `save()`, `parseFile`) or a source filename. Plain prompts never import the driver.
+- **A small local helper keeps the driver loaded.** The first graph prompt starts `cognitive_graph.graph_helper`
+  in the background and answers that prompt from memory only. Later prompts query the warm helper.
+  Measured on this repo with every core busy: median 1.6 s with graph context (was 5.5 s and a timeout).
+- **Lifecycle:** one helper is shared by all concurrent Claude Code sessions. It listens on `127.0.0.1` only,
+  requires a random per-start token, and exits after 10 minutes idle or when a newer helper replaces it. A
+  start lock prevents duplicate spawns. If Neo4j is unreachable, no helper is started, and a failed start
+  backs off for 60 s. A helper for a different Neo4j configuration is never used for your queries.
+- **Scope:** every query is still scoped to the project's graph id.
+- **State:** `~/.cognitive-graph/helper.json` (port, token, pid). Override the folder with `COGNITIVE_GRAPH_HOME`.
+
+```bash
+cognitive-graph hook helper status     # running / not answering / not running
+cognitive-graph hook helper stop       # shut it down (it also exits on its own when idle)
+```
+
+Set `COGNITIVE_GRAPH_HELPER=off` to query Neo4j directly in the hook (the slower path). The first prompt after a
+cold start goes without graph context, and the hook says so. Memory is always available.
+
 ### Manual and per-project setup (optional overrides)
 
 None of this is needed for normal use. Replace `<PROJECT_PATH>` with a repository folder.
@@ -492,13 +555,14 @@ no login, so run it on localhost only. Do not expose it to the internet.
 | `code_parser.py` | tree-sitter parsing, per-language function and call rules |
 | `graph_db.py` | Neo4j schema, writes, retrieval |
 | `ingestor.py` | folder walk, filters, full and single-file ingestion |
-| `agent.py`, `llm.py` | retrieval + Ollama/Gemini clients (streaming, retries) |
+| `agent.py`, `llm.py` | retrieval + a client that shells out to the local `claude` CLI (streaming, no API key) |
 | `editor.py` | verified function-level edits for the chat UI |
 | `cli.py` | `cognitive-graph` command |
 | `memory.py`, `memory_cli.py` | Git-backed project memory store, briefs, `memory` subcommands |
 | `mcp_server.py` | MCP server exposing the memory to Claude Code |
 | `hook.py`, `retrieval.py`, `hook_cli.py` | `UserPromptSubmit` hook, project-scoped prompt retrieval, hook install/status |
 | `session_start.py` | `SessionStart` hook: auto-init, starts the sync, offers the newest handoff |
+| `graph_helper.py` | warm local graph-query helper process used by the prompt hook |
 | `session_end.py` | `SessionEnd` hook: builds and atomically saves a proposed session handoff |
 | `graph_sync.py`, `indexing_rules.py` | bounded incremental background graph sync (change scan, lock, resumable state) |
 | `graph_admin.py` | inspect / adopt / purge graph data from before project scoping |

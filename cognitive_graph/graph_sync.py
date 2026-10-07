@@ -31,6 +31,8 @@ from pathlib import Path
 from .memory import MEMORY_DIR, ProjectResolution, resolve_project
 
 STATE_NAME, CHECK_NAME, LOCK_NAME = "sync-state.json", "sync-check", "sync.lock"
+# Bump when the stored node properties change (search_text): older state forces one full re-index.
+TERMS_VERSION = 2
 LOCAL_FILES = (STATE_NAME, LOCK_NAME, CHECK_NAME)
 LOCK_STALE_SECONDS = 120     # a lock nobody has touched for this long belongs to a dead process
 UNAVAILABLE_BACKOFF = 120    # after a failed attempt (Neo4j down) wait this long before spawning again
@@ -172,9 +174,10 @@ def _walk_listing(root: Path) -> list[str]:
 def source_files(root: Path, suffixes, deadline: float | None = None) -> tuple[dict[str, list[int]], bool]:
     """{relative posix path: [size, mtime_ns]} for indexable files, and whether the scan finished
     before `deadline` (a time.monotonic() value)."""
-    from .indexing_rules import is_indexable
+    from .indexing_rules import is_indexable, load_ignore
 
     root = Path(root)
+    ignore = load_ignore(root)
     names = _git_listing(root)
     if names is None:
         names = _walk_listing(root)
@@ -182,7 +185,7 @@ def source_files(root: Path, suffixes, deadline: float | None = None) -> tuple[d
     for n, rel in enumerate(names):
         if deadline is not None and n % 200 == 0 and time.monotonic() > deadline:
             return found, False
-        if not is_indexable(tuple(rel.split("/")), suffixes):
+        if not is_indexable(tuple(rel.split("/")), suffixes, ignore):
             continue
         try:
             st = os.stat(root / rel)
@@ -212,8 +215,8 @@ def run_sync(res: ProjectResolution, db, parser, cfg: SyncConfig, full: bool = F
         return SyncResult("busy", "another sync is already running for this project")
     try:
         state = load_state(root)
-        if full or state.get("graph_id") != res.graph_id:
-            state = {"schema": 1, "graph_id": res.graph_id, "files": {}}
+        if full or state.get("graph_id") != res.graph_id or state.get("terms_version") != TERMS_VERSION:
+            state = {"schema": 1, "graph_id": res.graph_id, "files": {}, "terms_version": TERMS_VERSION}
         indexed: dict[str, list[int]] = state.setdefault("files", {})
         if indexed and db.stats()["files"] == 0:  # the graph was cleared behind our back
             indexed.clear()
@@ -291,7 +294,7 @@ def maybe_spawn_sync(res: ProjectResolution, cfg: SyncConfig, force: bool = Fals
         return None
     root = res.root
     state = load_state(root)
-    first = not state.get("files") or state.get("graph_id") != res.graph_id
+    first = not state.get("files") or state.get("graph_id") != res.graph_id or state.get("terms_version") != TERMS_VERSION
     if SyncLock.is_fresh(root):
         return "code graph is being indexed in the background; graph results may be incomplete" if first else None
     now = time.time()
@@ -310,7 +313,8 @@ def maybe_spawn_sync(res: ProjectResolution, cfg: SyncConfig, force: bool = Fals
         from .indexing_rules import SUPPORTED_SUFFIXES
 
         current, complete = source_files(root, SUPPORTED_SUFFIXES, deadline=time.monotonic() + SCAN_BUDGET)
-        indexed = {} if state.get("graph_id") != res.graph_id else state.get("files", {})
+        stale = state.get("graph_id") != res.graph_id or state.get("terms_version") != TERMS_VERSION
+        indexed = {} if stale else state.get("files", {})
         todo, gone = plan_changes(current, indexed)
         if complete and not todo and not gone:
             return None

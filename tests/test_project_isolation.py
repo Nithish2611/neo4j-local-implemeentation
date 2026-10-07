@@ -178,7 +178,8 @@ def test_schema_drops_only_the_old_global_constraints():
     GraphDatabase("", "", "", _driver=drv).init_schema()
     stmts = [q for q, _ in drv.calls]
     assert stmts[:2] == ["DROP CONSTRAINT file_path IF EXISTS", "DROP CONSTRAINT function_key IF EXISTS"]
-    assert all("project_id" in q for q in stmts[2:]) and len(stmts) == 4
+    assert all("project_id" in q for q in stmts[2:4]) and len(stmts) == 5
+    assert stmts[4].startswith("CREATE FULLTEXT INDEX function_text IF NOT EXISTS")
 
 
 def test_find_relevant_returns_nothing_for_unrelated_prompt():

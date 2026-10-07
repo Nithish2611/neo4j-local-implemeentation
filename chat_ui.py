@@ -28,8 +28,8 @@ def get_backend():
 
 
 @st.cache_resource
-def get_llm(provider: str):
-    return build_llm(get_backend()[0], provider)
+def get_llm():
+    return build_llm(get_backend()[0])
 
 
 try:
@@ -110,8 +110,7 @@ with st.sidebar:
     if not path_ok:
         st.warning("That path does not exist.")
 
-    provider = st.selectbox("LLM provider", ["ollama", "gemini"],
-                            index=["ollama", "gemini"].index(settings.llm_provider) if settings.llm_provider in ("ollama", "gemini") else 0)
+    st.caption(f"LLM: {settings.claude_cli}" + (f" ({settings.claude_model})" if settings.claude_model else ""))
 
     st.button("Run Full Ingestion", type="primary", disabled=not path_ok, on_click=on_full_ingest,
               use_container_width=True)
@@ -194,7 +193,7 @@ if prompt := st.chat_input("Ask about your code, or request a change..."):
 
     with st.chat_message("assistant"):
         try:
-            agent = CodeAgent(db, get_llm(provider))
+            agent = CodeAgent(db, get_llm())
             functions = agent.retrieve(prompt, history)
             if not functions:
                 answer, proposals, context = "The graph is empty. Use **Run Full Ingestion** in the sidebar first.", [], []
@@ -205,7 +204,7 @@ if prompt := st.chat_input("Ask about your code, or request a change..."):
                 answer = st.write_stream(agent.stream_answer(prompt, functions, history, allow_edits=True))
                 proposals = [resolve_proposal(db, p) for p in parse_proposals(answer)]
         except Exception as exc:
-            hint = " Is Ollama running?" if "Connection" in type(exc).__name__ else ""
+            hint = " Is `claude` installed and logged in?" if type(exc).__name__ == "ClaudeNotAvailable" else ""
             answer, proposals, context = f"⚠️ {type(exc).__name__}: {exc}.{hint}", [], []
             st.error(answer)
 

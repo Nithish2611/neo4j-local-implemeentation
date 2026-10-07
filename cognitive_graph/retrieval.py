@@ -6,6 +6,7 @@ or None when nothing relevant is found (ordinary prompts get no injected context
 """
 from __future__ import annotations
 
+import os
 import re
 import socket
 import threading
@@ -14,7 +15,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .graph_helper import HelperStarting, HelperUnavailable
+
 from .memory import Item, MemoryStore, ProjectResolution, _tokens, verified_refs
+from .terms import task_terms
 
 MIN_SCORE = 3  # cheap pre-filter on the search score
 LONG_WORD = 7  # a single shared word this long (in title/tags) is distinctive enough
@@ -28,6 +32,7 @@ class HookConfig:
     max_chars: int = 1800       # hard cap on the injected brief
     max_functions: int = 5      # graph functions listed
     max_memories: int = 5       # memory items listed
+    expand: int = 3             # top graph matches whose callers and callees are shown
     timeout: float = 3.0        # seconds allowed for the Neo4j lookup
     use_graph: bool = True
     enabled: bool = True
@@ -50,6 +55,7 @@ class HookConfig:
             max_chars=num("COGNITIVE_GRAPH_HOOK_MAX_CHARS", cls.max_chars, int),
             max_functions=num("COGNITIVE_GRAPH_HOOK_MAX_FUNCTIONS", cls.max_functions, int),
             max_memories=num("COGNITIVE_GRAPH_HOOK_MAX_MEMORIES", cls.max_memories, int),
+            expand=num("COGNITIVE_GRAPH_HOOK_EXPAND", cls.expand, int),
             timeout=num("COGNITIVE_GRAPH_HOOK_TIMEOUT", cls.timeout, float),
             use_graph=flag("COGNITIVE_GRAPH_HOOK_GRAPH", True),
             enabled=flag("COGNITIVE_GRAPH_HOOK", True),
@@ -59,6 +65,17 @@ class HookConfig:
 
 
 GraphFetch = Callable[[ProjectResolution, str, HookConfig], list[dict]]
+
+# A prompt can only name code graph items if it contains an identifier shaped like code (snake_case,
+# camelCase, PascalCase, a call `name(`) or a source filename. Plain English ("rename this variable")
+# never names a function, so the graph is not consulted and the Neo4j driver is not imported for it.
+_CODE_IDENTIFIER = re.compile(
+    r"\b(?:[a-z]+_[a-z0-9_]+|[a-z]+[A-Z][A-Za-z0-9]*|[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]*|[A-Za-z_]\w*\()")
+_SOURCE_FILE = re.compile(r"\b[\w./-]+\.(?:py|js|jsx|mjs|cjs|php)\b", re.IGNORECASE)
+
+
+def may_name_code(prompt: str) -> bool:
+    return bool(_CODE_IDENTIFIER.search(prompt) or _SOURCE_FILE.search(prompt))
 
 
 class GraphUnavailable(ConnectionError):
@@ -73,18 +90,41 @@ def _require_listening(uri: str, timeout: float = 0.3) -> None:
         raise GraphUnavailable("Neo4j is not reachable at the configured address") from exc
 
 
+def helper_enabled(env=None) -> bool:
+    env = os.environ if env is None else env
+    return str(env.get("COGNITIVE_GRAPH_HELPER", "on")).strip().lower() not in ("0", "off", "false", "no")
+
+
 def neo4j_fetch(res: ProjectResolution, prompt: str, cfg: HookConfig) -> list[dict]:
-    """Functions from THIS project's graph that the prompt refers to."""
+    """Functions from THIS project's graph that the prompt refers to.
+
+    Normally answered by the warm helper process (see graph_helper), which already has the Neo4j driver
+    loaded. The direct path imports the driver inside the hook and is used when the helper is disabled or
+    another Neo4j configuration's helper is running."""
     from .config import Settings
 
     s = Settings.from_env(res.root / ".env")
-    _require_listening(s.neo4j_uri)  # before importing the (slow) neo4j driver
+    _require_listening(s.neo4j_uri)  # a stopped database must not cause a helper to be started
+    scope = res.graph_id or res.project_id
+    if helper_enabled():
+        from . import graph_helper
+
+        try:
+            return graph_helper.query_task(scope, prompt, cfg.max_functions, cfg.expand,
+                                           s.neo4j_uri, s.neo4j_user, s.neo4j_password)
+        except graph_helper.ConfigMismatch:
+            pass  # direct path below
+
     from .graph_db import GraphDatabase
 
     with GraphDatabase(s.neo4j_uri, s.neo4j_user, s.neo4j_password,
                        connection_timeout=min(cfg.timeout, 2.0)) as base:
         base.verify()
-        return base.scoped(res.graph_id or res.project_id).find_relevant(prompt, cfg.max_functions)
+        return base.scoped(scope).find_by_task(prompt, cfg.max_functions, cfg.expand)
+
+
+class SlowLookup(TimeoutError):
+    """The graph lookup did not finish within the hook's time budget."""
 
 
 def _with_timeout(fn: Callable[[], list[dict]], seconds: float) -> list[dict]:
@@ -100,7 +140,7 @@ def _with_timeout(fn: Callable[[], list[dict]], seconds: float) -> list[dict]:
     t.start()
     t.join(seconds)
     if t.is_alive():
-        raise TimeoutError(f"no answer within {seconds:g}s")
+        raise SlowLookup(f"no answer within {seconds:g}s")
     if "error" in box:
         raise box["error"]
     return box["value"]
@@ -169,14 +209,32 @@ def prompt_brief(res: ProjectResolution, prompt: str, cfg: HookConfig,
     except Exception as exc:
         diags.append(f"memory unavailable ({type(exc).__name__})")
 
-    if cfg.use_graph and cfg.max_functions > 0:
+    if cfg.use_graph and cfg.max_functions > 0 and (may_name_code(prompt) or len(task_terms(prompt)) >= 2):
         fetch = graph_fetch or neo4j_fetch
         try:
             functions = _with_timeout(lambda: fetch(res, prompt, cfg), cfg.timeout)
             graph_lines, _ = verified_refs(res.root, functions, cfg.max_functions)
+        except HelperStarting:
+            # The helper was just started (a cold start takes longer than one prompt). Memory answers now,
+            # and the next prompt uses the warm helper.
+            if not cfg.quiet:
+                diags.append("code graph helper is starting in the background; graph context from the next prompt")
+        except HelperUnavailable as exc:
+            if not cfg.quiet:
+                diags.append(f"code graph unavailable ({exc}); using memory only")
+        except SlowLookup:
+            # Not an outage: the lookup (mostly importing the Neo4j driver) ran over the budget on a busy
+            # machine. Memory still answers, and the next prompt tries again.
+            if not cfg.quiet:
+                diags.append(f"code graph lookup skipped: took over {cfg.timeout:g}s on this machine; "
+                             "using memory only")
         except Exception as exc:
             if not cfg.quiet:
-                diags.append(f"code graph unavailable ({type(exc).__name__}); using memory only")
+                from .graph_helper import describe_error
+
+                kind, detail = describe_error(exc)
+                label = detail if kind == "error" else f"{kind} error: {detail}"
+                diags.append(f"code graph unavailable ({label}); using memory only")
 
     if not memory_lines and not graph_lines:
         return None, diags

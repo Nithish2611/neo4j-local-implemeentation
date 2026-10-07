@@ -135,7 +135,7 @@ def test_graph_fetch_receives_the_resolved_project_only(axis):
         seen.append((res.project_id, res.root))
         return []
 
-    out_of(axis, "how are invoices charged with stripe?", spy)
+    out_of(axis, "how are invoices charged with stripe? see charge_invoice", spy)
     assert seen == [(MemoryStore.open(axis).project_id, axis.resolve())]
 
 
@@ -168,21 +168,25 @@ def test_graph_error_falls_back_to_memory_with_diagnostic(axis):
     def boom(res, prompt, cfg):
         raise ConnectionError("neo4j down")
 
-    out = out_of(axis, "how are invoices charged with stripe?", boom)
+    out = out_of(axis, "how are invoices charged with stripe? see charge_invoice", boom)
     assert "D-0001" in out["hookSpecificOutput"]["additionalContext"]
     assert "code graph unavailable (ConnectionError)" in out["systemMessage"]
     assert "neo4j down" not in json.dumps(out)
 
 
 def test_graph_timeout_does_not_block(axis):
+    """A slow lookup (e.g. a busy machine) is skipped after the budget, and memory still answers.
+    The message says the lookup was skipped, not that Neo4j is unavailable."""
     def slow(res, prompt, cfg):
         time.sleep(2)
         return []
 
     t0 = time.time()
-    out = out_of(axis, "how are invoices charged with stripe?", slow, env={"COGNITIVE_GRAPH_HOOK_TIMEOUT": "0.2"})
+    out = out_of(axis, "how are invoices charged with stripe? see charge_invoice", slow, env={"COGNITIVE_GRAPH_HOOK_TIMEOUT": "0.2"})
     assert time.time() - t0 < 1.5
-    assert "D-0001" in out["hookSpecificOutput"]["additionalContext"] and "TimeoutError" in out["systemMessage"]
+    assert "D-0001" in out["hookSpecificOutput"]["additionalContext"]
+    assert "code graph lookup skipped: took over 0.2s" in out["systemMessage"]
+    assert "TimeoutError" not in out["systemMessage"] and "unavailable" not in out["systemMessage"]
 
 
 def test_quiet_mode_suppresses_graph_warning(axis):

@@ -10,11 +10,9 @@ class Settings:
     neo4j_uri: str
     neo4j_user: str
     neo4j_password: str
-    llm_provider: str
-    ollama_base_url: str
-    ollama_model: str
-    gemini_api_key: str | None
-    gemini_model: str
+    claude_cli: str
+    claude_model: str | None
+    claude_timeout: float
 
     @classmethod
     def from_env(cls, env_file=None) -> "Settings":
@@ -29,9 +27,7 @@ class Settings:
             neo4j_uri=os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687"),
             neo4j_user=os.getenv("NEO4J_USER", "neo4j"),
             neo4j_password=os.getenv("NEO4J_PASSWORD", "password123"),
-            llm_provider=os.getenv("LLM_PROVIDER", "ollama").lower(),
-            ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
-            ollama_model=os.getenv("OLLAMA_MODEL", "qwen2.5-coder:7b"),
-            gemini_api_key=os.getenv("MY_API_KEY"),
-            gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
+            claude_cli=os.getenv("CLAUDE_CLI", "claude"),
+            claude_model=os.getenv("CLAUDE_MODEL") or None,
+            claude_timeout=float(os.getenv("CLAUDE_TIMEOUT", "180")),
         )

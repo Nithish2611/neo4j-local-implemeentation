@@ -528,7 +528,9 @@ def verified_refs(root: Path, functions: list[dict], limit: int = 8) -> tuple[li
             continue
         rel = f"; calls {', '.join(fn['calls'][:4])}" if fn["calls"] else ""
         rel += f"; called by {', '.join(fn['called_by'][:4])}" if fn["called_by"] else ""
-        refs.append(f"- {fn['file']}:{fn['start_line']} `{fn['name']}`{rel}")
+        label = fn.get("label")  # set by task retrieval: strong | weak | ambiguous (absent for name lookups)
+        why = f" [{label}: {fn.get('why', '')}]" if label else ""
+        refs.append(f"- {fn['file']}:{fn['start_line']} `{fn['name']}`{why}{rel}")
     return refs[:limit], "" if refs else "no graph matches for this task in this project's files"
 
 
